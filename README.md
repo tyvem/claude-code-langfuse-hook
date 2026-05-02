@@ -1,5 +1,8 @@
 # claude-code-langfuse-hook
 
+[![CI](https://github.com/tyvem/claude-code-langfuse-hook/actions/workflows/ci.yml/badge.svg)](https://github.com/tyvem/claude-code-langfuse-hook/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Claude Code Stop hook that ships every assistant turn to [Langfuse](https://langfuse.com) as a trace, with a durable on-disk outbox and a fix for tool_use loss under streaming updates.
 
 Langfuse is open-source and works the same against [Langfuse Cloud](https://cloud.langfuse.com) or a [self-hosted instance](https://langfuse.com/self-hosting). This hook treats them identically: point `LANGFUSE_BASE_URL` at whichever you run, and the rest is the same.
