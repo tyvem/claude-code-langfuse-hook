@@ -149,6 +149,12 @@ Credentials live in your shell's environment, however you load them: direnv, 1Pa
 
 **The hook itself is hanging Claude Code.** The hook has a 15-second budget for the Langfuse SDK calls. If it's hanging longer than that, file an issue with the contents of `langfuse_hook.log`.
 
+## Timestamp behavior
+
+The hook stamps observations at wall-clock "now" (when the hook fires), not at the JSONL entry timestamp. For the live hook this is within ~1s of the actual turn end so the difference is invisible in practice. The original JSONL timestamps are preserved in observation metadata (`jsonl_user_timestamp`, `jsonl_first_assistant_timestamp`, `jsonl_last_assistant_timestamp`) for anyone who needs them.
+
+For the backfill driver, this means historical traces land at backfill-emit time, not at the original session time. If you need chronological-by-original-time queries, use the `jsonl_user_timestamp` metadata field. (Earlier 0.1.x releases used the langfuse 3.x ingestion API which accepted explicit start/end times; the 4.x public API stamps observations server-side from OTel.)
+
 ## Cost semantics
 
 Langfuse's `totalCost` field uses public API list prices for each model. If you're on a Claude subscription rather than per-token billing, the number is hypothetical. It's still useful for relative comparisons (Opus vs Sonnet, session-to-session) and for "what would this have cost at API prices" sanity checks.

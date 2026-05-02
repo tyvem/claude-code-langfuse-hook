@@ -39,7 +39,7 @@ from typing import Any
 
 # --- Langfuse import (fail-open) ---
 try:
-    from langfuse import Langfuse
+    from langfuse import Langfuse, propagate_attributes
 except Exception:
     sys.exit(0)
 
@@ -469,13 +469,6 @@ def _tool_calls_from_assistants(assistant_msgs: list[dict[str, Any]]) -> list[di
             })
     return calls
 
-def _parse_ts(ts_str: str | None) -> datetime | None:
-    if not ts_str:
-        return None
-    try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-    except Exception:
-        return None
 
 
 def _compute_run_tags(transcript_path: Path) -> list[str]:
@@ -513,30 +506,23 @@ def emit_turn(
     transcript_path: Path,
     tags: list[str] | None = None,
 ) -> None:
-    """Emit a turn to Langfuse via the ingestion API with JSONL-derived timestamps.
+    """Emit a turn to Langfuse using the OTel-style 4.x SDK API.
 
-    Used by both the live Stop hook and the backfill driver. The ingestion
-    API path is single-source-of-truth: live traces get millisecond-accurate
-    timestamps from the JSONL entry (not "now at emit time"), and backfilled
-    traces land at their original session time. Tags + cost handling identical
-    in both paths.
+    Builds: trace root span -> generation observation (model + usage_details
+    so Langfuse can price) -> N tool observations.
 
     `tags` lets the caller pin pre-computed tags (used by the outbox drain
     so a session that drains another session's outbox doesn't overwrite the
     persona/project tags with its own env). When None, tags are computed
     from current env vars via _compute_run_tags().
+
+    Timestamps note: the 4.x public API stamps observations at wall-clock
+    "now" rather than at the JSONL entry timestamp. For the live hook this
+    is within ~1s of the actual turn end (the hook fires on Stop), which is
+    fine. For the backfill driver, traces land at backfill-emit time, not
+    original session time. The JSONL-derived timestamps are persisted in
+    metadata for users who need chronological correlation.
     """
-    import uuid
-
-    from langfuse.api.resources.ingestion.types.create_generation_body import CreateGenerationBody
-    from langfuse.api.resources.ingestion.types.create_span_body import CreateSpanBody
-    from langfuse.api.resources.ingestion.types.ingestion_event import (
-        IngestionEvent_GenerationCreate,
-        IngestionEvent_SpanCreate,
-        IngestionEvent_TraceCreate,
-    )
-    from langfuse.api.resources.ingestion.types.trace_body import TraceBody
-
     user_text_raw = extract_text(get_content(turn.user_msg))
     user_text, user_text_meta = truncate_text(user_text_raw)
 
@@ -557,47 +543,32 @@ def emit_turn(
             c["output"] = None
 
     run_tags = tags if tags is not None else _compute_run_tags(transcript_path)
-
-    # Timestamps from JSONL.
-    user_ts = _parse_ts(turn.user_msg.get("timestamp")) or datetime.now(timezone.utc)
-    first_asst_ts = _parse_ts(turn.assistant_msgs[0].get("timestamp")) or user_ts
-    last_asst_ts = _parse_ts(last_assistant.get("timestamp")) or first_asst_ts
-
     usage = extract_usage(turn.assistant_msgs)
-    trace_id = uuid.uuid4().hex
-    gen_id = uuid.uuid4().hex
-    now_iso = datetime.now(timezone.utc).isoformat()
 
-    events = [
-        IngestionEvent_TraceCreate(
-            id=uuid.uuid4().hex,
-            timestamp=now_iso,
-            body=TraceBody(
-                id=trace_id,
-                timestamp=user_ts,
-                name=f"Claude Code - Turn {turn_num}",
-                session_id=session_id,
-                tags=run_tags,
-                input={"role": "user", "content": user_text},
-                output={"role": "assistant", "content": assistant_text},
-                metadata={
-                    "source": "claude-code",
-                    "session_id": session_id,
-                    "turn_number": turn_num,
-                    "transcript_path": str(transcript_path),
-                    "user_text": user_text_meta,
-                },
-            ),
-        ),
-        IngestionEvent_GenerationCreate(
-            id=uuid.uuid4().hex,
-            timestamp=now_iso,
-            body=CreateGenerationBody(
-                id=gen_id,
-                trace_id=trace_id,
+    # JSONL timestamps preserved in metadata since 4.x doesn't accept
+    # start_time/end_time on the public observation API.
+    user_ts_str = turn.user_msg.get("timestamp")
+    first_asst_ts_str = turn.assistant_msgs[0].get("timestamp")
+    last_asst_ts_str = last_assistant.get("timestamp")
+
+    trace_name = f"Claude Code - Turn {turn_num}"
+    with propagate_attributes(session_id=session_id, tags=run_tags, trace_name=trace_name):
+        with langfuse.start_as_current_observation(
+            name=trace_name,
+            as_type="span",
+            input={"role": "user", "content": user_text},
+            metadata={
+                "source": "claude-code",
+                "session_id": session_id,
+                "turn_number": turn_num,
+                "transcript_path": str(transcript_path),
+                "user_text": user_text_meta,
+                "jsonl_user_timestamp": user_ts_str,
+            },
+        ) as trace_span:
+            with langfuse.start_as_current_observation(
                 name="Claude Response",
-                start_time=first_asst_ts,
-                end_time=last_asst_ts,
+                as_type="generation",
                 model=model,
                 input={"role": "user", "content": user_text},
                 output={"role": "assistant", "content": assistant_text},
@@ -605,41 +576,32 @@ def emit_turn(
                 metadata={
                     "assistant_text": assistant_text_meta,
                     "tool_count": len(tool_calls),
+                    "jsonl_first_assistant_timestamp": first_asst_ts_str,
+                    "jsonl_last_assistant_timestamp": last_asst_ts_str,
                 },
-            ),
-        ),
-    ]
+            ):
+                pass
 
-    # Tool spans share the generation's window since per-call timing
-    # isn't readily available from the JSONL.
-    for tc in tool_calls:
-        in_obj = tc["input"]
-        if isinstance(in_obj, str):
-            in_obj, in_meta = truncate_text(in_obj)
-        else:
-            in_meta = None
-        events.append(IngestionEvent_SpanCreate(
-            id=uuid.uuid4().hex,
-            timestamp=now_iso,
-            body=CreateSpanBody(
-                id=uuid.uuid4().hex,
-                trace_id=trace_id,
-                parent_observation_id=gen_id,
-                name=f"Tool: {tc['name']}",
-                start_time=first_asst_ts,
-                end_time=last_asst_ts,
-                input=in_obj,
-                output=tc.get("output"),
-                metadata={
-                    "tool_name": tc["name"],
-                    "tool_id": tc["id"],
-                    "input_meta": in_meta,
-                    "output_meta": tc.get("output_meta"),
-                },
-            ),
-        ))
+            for tc in tool_calls:
+                in_obj = tc["input"]
+                if isinstance(in_obj, str):
+                    in_obj, in_meta = truncate_text(in_obj)
+                else:
+                    in_meta = None
+                with langfuse.start_as_current_observation(
+                    name=f"Tool: {tc['name']}",
+                    as_type="tool",
+                    input=in_obj,
+                    metadata={
+                        "tool_name": tc["name"],
+                        "tool_id": tc["id"],
+                        "input_meta": in_meta,
+                        "output_meta": tc.get("output_meta"),
+                    },
+                ) as tool_obs:
+                    tool_obs.update(output=tc.get("output"))
 
-    langfuse.api.ingestion.batch(batch=events)
+            trace_span.update(output={"role": "assistant", "content": assistant_text})
 
 
 # ----------------- Outbox -----------------
