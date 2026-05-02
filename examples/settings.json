@@ -1,0 +1,19 @@
+{
+  "_comment_install": "Drop hook.py somewhere on disk (e.g. ~/.claude/hooks/), then point Claude Code at it via the Stop hook below. Replace the absolute path with your install location.",
+
+  "_comment_python": "The hook needs the `langfuse` package available to whichever Python interpreter you point it at. Either install langfuse globally, or use a venv and point `command` at the venv's python.",
+
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env python3 /absolute/path/to/hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}

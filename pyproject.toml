@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-code-langfuse-hook"
+version = "0.1.0"
+description = "Ship Claude Code transcripts to Langfuse with a durable outbox and streaming-update merge"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    # Pinned to the 3.x line. The hook uses the explicit ingestion-API
+    # types under langfuse.api.resources.ingestion.types, which were
+    # restructured in 4.x. Support for 4.x is a planned follow-up; PRs
+    # welcome.
+    "langfuse>=3.0,<4",
+]
+
+[tool.setuptools]
+py-modules = ["hook", "backfill", "recompute_costs"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "requests>=2",
+]
+
+[project.urls]
+Homepage = "https://github.com/tyvem/claude-code-langfuse-hook"
+Issues = "https://github.com/tyvem/claude-code-langfuse-hook/issues"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # line length handled by formatter
+    "B008",  # default arg with function call (Pydantic-style is fine here)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
