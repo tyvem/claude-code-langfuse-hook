@@ -4,17 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-code-langfuse-hook"
-version = "0.1.0"
+version = "0.2.0"
 description = "Ship Claude Code transcripts to Langfuse with a durable outbox and streaming-update merge"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
-    # Pinned to the 3.x line. The hook uses the explicit ingestion-API
-    # types under langfuse.api.resources.ingestion.types, which were
-    # restructured in 4.x. Support for 4.x is a planned follow-up; PRs
-    # welcome.
-    "langfuse>=3.0,<4",
+    # 4.x line. emit_turn uses the OTel-style start_as_current_observation
+    # plus propagate_attributes, which is the public 4.x API. Users on
+    # langfuse 3.x can pin claude-code-langfuse-hook==0.1.x.
+    "langfuse>=4.0,<5",
 ]
 
 [tool.setuptools]
